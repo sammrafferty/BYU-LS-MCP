@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "byu-learning-suite": {
+      "command": "node",
+      "args": ["/Users/mylittlehelper/byu-learning-suite-mcp/src/index.js"]
+    }
+  }
+}

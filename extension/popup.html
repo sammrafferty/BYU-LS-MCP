@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 340px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0a0e1a;
+    color: #e0e4ef;
+    padding: 28px 24px;
+    text-align: center;
+  }
+  h1 { font-size: 17px; font-weight: 700; color: #fff; }
+  .sub { font-size: 12px; color: #8890a4; margin-top: 4px; margin-bottom: 24px; }
+
+  /* States */
+  .state { display: none; }
+  .state.active { display: block; }
+
+  /* Not logged in */
+  .login-msg { font-size: 13px; color: #c0c4d0; margin-bottom: 16px; line-height: 1.5; }
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-login {
+    background: #1a2040;
+    color: #7dd3fc;
+    border: 1px solid #2a3e5c;
+  }
+  .btn-login:hover { background: #1e2850; }
+  .btn-connect {
+    background: #4a6cf7;
+    color: #fff;
+    font-size: 16px;
+    padding: 16px;
+  }
+  .btn-connect:hover { background: #3b5de7; }
+  .btn-connect:disabled { background: #2a2e3e; color: #555; cursor: wait; }
+
+  /* Status dot */
+  .status-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    font-size: 13px;
+  }
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot.green { background: #4ade80; }
+  .dot.red { background: #f87171; }
+
+  /* Result */
+  .url-box {
+    margin-top: 20px;
+    background: #0a1520;
+    border: 1px solid #1a3d5c;
+    border-radius: 10px;
+    padding: 14px;
+    text-align: left;
+  }
+  .url-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #8890a4; margin-bottom: 8px; }
+  .url-text {
+    font-family: 'SF Mono', Menlo, monospace;
+    font-size: 11px;
+    word-break: break-all;
+    color: #7dd3fc;
+    background: #060d18;
+    padding: 10px;
+    border-radius: 6px;
+    user-select: all;
+    margin-bottom: 10px;
+  }
+  .btn-copy {
+    width: 100%;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid #2a3e5c;
+    background: #12162a;
+    color: #7dd3fc;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn-copy:hover { background: #1a2040; }
+  .btn-copy.copied { background: #0d2818; border-color: #1a4d2e; color: #4ade80; }
+
+  .steps {
+    margin-top: 14px;
+    font-size: 11px;
+    color: #8890a4;
+    line-height: 1.7;
+    text-align: left;
+  }
+  .steps b { color: #e0e4ef; }
+
+  .error { color: #f87171; font-size: 12px; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <h1>BYU Learning Suite</h1>
+  <div class="sub">Connect to Claude in one click</div>
+
+  <!-- State: Not logged in -->
+  <div id="stateLogin" class="state">
+    <div class="status-row"><div class="dot red"></div> Not logged in</div>
+    <p class="login-msg">Log in to Learning Suite first, then come back and click the extension again.</p>
+    <button class="btn btn-login" id="openLS">Open Learning Suite</button>
+  </div>
+
+  <!-- State: Ready to connect -->
+  <div id="stateReady" class="state">
+    <div class="status-row"><div class="dot green"></div> Logged in to Learning Suite</div>
+    <button class="btn btn-connect" id="connectBtn">Connect to Claude</button>
+  </div>
+
+  <!-- State: Connecting -->
+  <div id="stateLoading" class="state">
+    <div class="status-row"><div class="dot green"></div> Connecting...</div>
+    <button class="btn btn-connect" disabled>Setting up...</button>
+  </div>
+
+  <!-- State: Done -->
+  <div id="stateDone" class="state">
+    <div class="status-row"><div class="dot green"></div> Connected!</div>
+    <div class="url-box">
+      <div class="url-label">Your connector URL</div>
+      <div class="url-text" id="connectorUrl"></div>
+      <button class="btn-copy" id="copyBtn">Copy URL</button>
+    </div>
+    <div class="steps">
+      <b>Paste it in Claude Desktop:</b><br>
+      Settings → Connectors → <b>+</b> → Add custom connector<br>
+      Name it anything → paste the URL → <b>Add</b>
+    </div>
+  </div>
+
+  <!-- State: Error -->
+  <div id="stateError" class="state">
+    <div class="status-row"><div class="dot red"></div> Something went wrong</div>
+    <p class="error" id="errorMsg"></p>
+    <button class="btn btn-login" id="retryBtn" style="margin-top: 12px;">Try Again</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

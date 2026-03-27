@@ -1,0 +1,25 @@
+{
+  "name": "byu-learning-suite-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for BYU Learning Suite integration",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "byu-learning-suite-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "remote": "node src/remote.js",
+    "auth": "node src/auth/login.js",
+    "auth:remote": "node src/auth/remote-login.js",
+    "discover": "node src/scraper/discover.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "cheerio": "^1.0.0",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.50.0"
+  }
+}
