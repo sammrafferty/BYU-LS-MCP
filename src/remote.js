@@ -174,6 +174,69 @@ app.delete("/auth/revoke/:token", (req, res) => {
   res.json({ status: "revoked" });
 });
 
+// Debug: test if stored cookies can actually reach LS
+app.get("/auth/debug/:token", async (req, res) => {
+  const user = getUser(req.params.token);
+  if (!user) return res.status(404).json({ error: "Token not found" });
+
+  const cookieHeader = user.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  const cookieNames = user.cookies.map((c) => c.name);
+  const url = `https://learningsuite.byu.edu/.${user.sessionCode}/student/top`;
+
+  try {
+    const lsRes = await fetch(url, {
+      headers: { Cookie: cookieHeader, "User-Agent": "Mozilla/5.0" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(10000),
+    });
+
+    const location = lsRes.headers.get("location") || "";
+    const isCasRedirect = location.includes("cas.byu.edu");
+
+    if (isCasRedirect) {
+      return res.json({
+        status: "session_expired",
+        detail: "LS redirected to CAS login — cookies are no longer valid",
+        sessionCode: user.sessionCode,
+        cookieCount: user.cookies.length,
+        cookieNames,
+      });
+    }
+
+    if (lsRes.status === 200) {
+      const body = await lsRes.text();
+      const hasCourseData = body.includes("initialCourseGroups");
+      return res.json({
+        status: hasCourseData ? "working" : "auth_ok_but_no_data",
+        detail: hasCourseData
+          ? "Cookies work! LS returned course data."
+          : "LS returned 200 but no course data found in HTML. Page may require different rendering.",
+        httpStatus: 200,
+        bodyLength: body.length,
+        hasCourseData,
+        sessionCode: user.sessionCode,
+        cookieCount: user.cookies.length,
+        cookieNames,
+      });
+    }
+
+    return res.json({
+      status: "unexpected",
+      httpStatus: lsRes.status,
+      location: location || null,
+      sessionCode: user.sessionCode,
+      cookieNames,
+    });
+  } catch (err) {
+    return res.json({
+      status: "error",
+      detail: err.message,
+      sessionCode: user.sessionCode,
+      cookieNames,
+    });
+  }
+});
+
 // --- MCP endpoints (per-user) ---
 
 async function createMcpForUser(userToken) {
