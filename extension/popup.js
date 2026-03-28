@@ -1,8 +1,7 @@
 // =============================================
 // CHANGE THIS after deploying to Railway:
 // =============================================
-const SERVER_URL = "http://localhost:3847";
-// e.g. "https://byu-ls-mcp-production.up.railway.app"
+const SERVER_URL = "https://byu-ls-mcp-production.up.railway.app";
 
 // --- State management ---
 function showState(id) {

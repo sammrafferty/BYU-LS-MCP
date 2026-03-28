@@ -46,6 +46,7 @@ export function getUser(token) {
   const user = sessions.get(token);
   if (user) {
     user.lastUsed = new Date().toISOString();
+    persist();
   }
   return user || null;
 }
