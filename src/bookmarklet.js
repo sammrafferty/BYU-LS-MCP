@@ -13,7 +13,9 @@
   if (old) old.remove();
 
   var cookies = document.cookie;
-  var sessionMatch = location.href.match(/\.(\w{3,6})\//);
+  // Session code is in the URL path: learningsuite.byu.edu/.XXXX/student/...
+  // Must match the path segment, not ".edu/" from the domain
+  var sessionMatch = location.pathname.match(/^\/\.(\w{3,6})\//);
   var sessionCode = sessionMatch ? sessionMatch[1] : "";
 
   if (!cookies || !cookies.includes("PHPSESSID")) {
