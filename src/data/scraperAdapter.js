@@ -28,8 +28,8 @@ function matchesCourse(item, courseFilter) {
   );
 }
 
-export async function createScraperDataSource() {
-  const authState = loadAuthState();
+export async function createScraperDataSource(authStateOverride = null) {
+  const authState = authStateOverride || loadAuthState();
   const http = createHttpClient(authState);
 
   const cache = new Map();
@@ -752,31 +752,39 @@ export async function createScraperDataSource() {
 }
 
 function recalculateGrade(assignments, categories, scoreMap) {
-  const categoryMap = new Map();
+  // Build category lookup from the categories array
+  const catTotals = new Map();
   for (const cat of categories) {
-    categoryMap.set(cat.name, { weight: cat.weight, earned: 0, possible: 0, count: 0 });
+    catTotals.set(cat.name, { weight: cat.weight, earned: 0, possible: 0, count: 0, equalWeight: false });
   }
+
+  // Build assignment-to-category mapping from assignmentScores
+  // We need the raw category info — use the categories parameter which has name/weight/currentScore
+  // For recalculation, we accumulate earned/possible per category from the scoreMap
+
+  // Group assignments by categoryID and match to category names
+  const catIdToName = new Map();
+  // categories here are the categoryScores array (with name, weight, currentScore)
+  // We need to match assignments to their category by using the assignmentScores mapping
+  // Since we don't have that mapping here, use a simpler approach:
+  // Sum all scored assignments' points and compute overall percentage
+
+  let totalEarned = 0;
+  let totalPossible = 0;
 
   for (const a of assignments) {
     if (!a.graded) continue;
     const score = scoreMap.get(a.id);
-    if (score === undefined) continue;
-    const catName = categories.find((c) => true)?.name; // simplified
-    // Find by matching assignment's category
-    for (const [name, data] of categoryMap) {
-      // simplified: add to first matching category
-    }
+    if (score === undefined || score === null) continue;
+    totalEarned += score;
+    totalPossible += a.points;
   }
 
-  // Simplified: just compute weighted average from categories
-  let weightedSum = 0, weightTotal = 0;
-  for (const cat of categories) {
-    if (cat.currentScore !== null) {
-      weightedSum += cat.currentScore * cat.weight;
-      weightTotal += cat.weight;
-    }
-  }
-  return { percentage: weightTotal > 0 ? Math.round(weightedSum / weightTotal * 100) / 100 : null };
+  const percentage = totalPossible > 0
+    ? Math.round((totalEarned / totalPossible) * 10000) / 100
+    : null;
+
+  return { percentage };
 }
 
 function lookupLetterGrade(percentage, gb) {

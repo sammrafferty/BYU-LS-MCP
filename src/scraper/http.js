@@ -19,6 +19,7 @@ export function createHttpClient(authState) {
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
       redirect: "manual",
+      signal: AbortSignal.timeout(15000),
     });
 
     // Session expired — LS redirects to CAS login
@@ -45,6 +46,7 @@ export function createHttpClient(authState) {
         Accept: "text/html,application/xhtml+xml,application/json,*/*;q=0.8",
       },
       redirect: "manual",
+      signal: AbortSignal.timeout(15000),
     });
 
     if (res.status >= 300 && res.status < 400) {
