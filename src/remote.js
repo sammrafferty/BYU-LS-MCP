@@ -43,12 +43,24 @@ const activeTransports = new Map();
 
 // --- Auth endpoints ---
 
-// Register a new user (called by CLI auth tool or Chrome extension)
+// Register a new user (called by bookmarklet, CLI, or Chrome extension)
 app.post("/auth/register", async (req, res) => {
-  const { cookies } = req.body;
+  let { cookies } = req.body;
   let { sessionCode } = req.body;
 
-  if (!cookies || !Array.isArray(cookies)) {
+  // Handle bookmarklet format: cookies as "name=value; name=value" string
+  if (typeof cookies === "string") {
+    cookies = cookies.split("; ").map((pair) => {
+      const idx = pair.indexOf("=");
+      return {
+        name: pair.slice(0, idx),
+        value: pair.slice(idx + 1),
+        domain: "learningsuite.byu.edu",
+      };
+    });
+  }
+
+  if (!cookies || !Array.isArray(cookies) || cookies.length === 0) {
     return res.status(400).json({ error: "Missing or invalid cookies" });
   }
 
@@ -179,25 +191,88 @@ app.all("/mcp/:token", async (req, res) => {
 // --- Landing page ---
 
 app.get("/", (req, res) => {
-  res.send(`
-    <html>
-    <head><title>BYU Learning Suite MCP Server</title>
-    <style>body{font-family:system-ui;max-width:600px;margin:40px auto;padding:0 20px;color:#e0e0e0;background:#1a1a2e}
-    code{background:#16213e;padding:2px 8px;border-radius:4px}h1{color:#e94560}a{color:#0f3460}</style></head>
-    <body>
-    <h1>BYU Learning Suite MCP</h1>
-    <p>This server connects Claude to your BYU Learning Suite data — assignments, grades, deadlines, and more.</p>
-    <h2>Setup (one time)</h2>
-    <ol>
-      <li>Clone the repo and install: <code>git clone ... && npm install</code></li>
-      <li>Run: <code>npm run auth:remote</code></li>
-      <li>Log in with your BYU credentials (handles Duo)</li>
-      <li>Copy the connector URL it prints</li>
-      <li>In Claude Desktop → Connectors → + → paste the URL</li>
-    </ol>
-    <p>That's it. Ask Claude about your assignments, grades, deadlines, etc.</p>
-    </body></html>
-  `);
+  const SERVER = `${req.protocol}://${req.get("host")}`;
+  const bookmarkletCode = `javascript:void((function(){if(!location.hostname.includes('learningsuite.byu.edu')){alert('Open Learning Suite first, then click this bookmark.');return;}var c=document.cookie;var m=location.href.match(/\\.(\\w{4})\\//);var s=m?m[1]:'';var o=document.createElement('div');o.id='_byu_mcp_overlay';o.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:999999;display:flex;align-items:center;justify-content:center;font-family:system-ui';o.innerHTML='<div style=\"background:%231a1a2e;border-radius:16px;padding:32px;max-width:420px;width:90%25;color:%23fff;text-align:center\"><div style=\"font-size:20px;font-weight:700;margin-bottom:8px\">Connecting...</div><div style=\"color:%238890a4;font-size:13px\">Please wait</div></div>';document.body.appendChild(o);fetch('${SERVER}/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookies:c,sessionCode:s})}).then(function(r){return r.json()}).then(function(d){if(d.error){throw new Error(d.error)}var url='${SERVER}'+d.mcpUrl;o.innerHTML='<div style=\"background:%231a1a2e;border-radius:16px;padding:32px;max-width:420px;width:90%25;color:%23fff;text-align:center\"><div style=\"font-size:24px;margin-bottom:4px\">Connected!</div><div style=\"color:%238890a4;font-size:13px;margin-bottom:20px\">Copy this URL into Claude Desktop</div><input id=_mcp_url value=\"'+url+'\" readonly onclick=\"this.select()\" style=\"width:100%25;padding:12px;border-radius:8px;border:1px solid %23333;background:%230a0e1a;color:%237dd3fc;font-size:11px;font-family:monospace;margin-bottom:12px;box-sizing:border-box\"><button onclick=\"navigator.clipboard.writeText(\\''+url+'\\');this.textContent=\\'Copied!\\';this.style.background=\\'%230d2818\\';this.style.borderColor=\\'%231a4d2e\\';this.style.color=\\'%234ade80\\'\" style=\"width:100%25;padding:12px;border-radius:10px;border:1px solid %232a3e5c;background:%234a6cf7;color:%23fff;font-size:14px;font-weight:600;cursor:pointer\">Copy URL</button><div style=\"margin-top:16px;font-size:12px;color:%238890a4;line-height:1.6;text-align:left\">Open <b style=color:white>Claude Desktop</b> and go to:<br>Settings → Connectors → <b style=color:white>+</b> → Add custom connector<br>Paste the URL → click <b style=color:white>Add</b></div></div>';o.onclick=function(e){if(e.target===o)o.remove()}}).catch(function(e){o.innerHTML='<div style=\"background:%231a1a2e;border-radius:16px;padding:32px;max-width:420px;width:90%25;color:%23fff;text-align:center\"><div style=\"font-size:20px;margin-bottom:8px\">Something went wrong</div><div style=\"color:%23f87171;font-size:13px\">'+e.message+'</div><button onclick=\"document.getElementById(\\'_byu_mcp_overlay\\').remove()\" style=\"margin-top:16px;padding:10px 24px;border-radius:8px;border:1px solid %23333;background:%231a1a2e;color:%23fff;cursor:pointer\">Close</button></div>'})})())`;
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BYU Learning Suite → Claude</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0a0e1a; color: #e0e4ef; min-height: 100vh; display: flex; justify-content: center; padding: 40px 20px; }
+  .container { max-width: 520px; width: 100%; }
+  h1 { font-size: 28px; font-weight: 700; color: #fff; margin-bottom: 6px; }
+  .subtitle { color: #8890a4; font-size: 15px; margin-bottom: 36px; }
+  .step { display: flex; gap: 16px; margin-bottom: 28px; }
+  .step-num { flex-shrink: 0; width: 36px; height: 36px; border-radius: 50%; background: #1a2040; color: #4a6cf7; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; border: 2px solid #2a3e5c; }
+  .step-content h3 { font-size: 16px; color: #fff; margin-bottom: 6px; }
+  .step-content p { font-size: 13px; color: #8890a4; line-height: 1.6; }
+
+  /* Bookmarklet button */
+  .bookmarklet-area { text-align: center; margin: 32px 0; padding: 28px; border: 2px dashed #2a3e5c; border-radius: 16px; background: #0d1120; }
+  .bookmarklet-area p { font-size: 13px; color: #8890a4; margin-bottom: 16px; }
+  .bookmarklet-btn { display: inline-block; padding: 16px 32px; background: #4a6cf7; color: #fff; font-size: 16px; font-weight: 700; border-radius: 12px; text-decoration: none; cursor: grab; box-shadow: 0 4px 24px rgba(74,108,247,0.3); transition: transform 0.15s, box-shadow 0.15s; }
+  .bookmarklet-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 32px rgba(74,108,247,0.4); }
+  .bookmarklet-btn:active { cursor: grabbing; }
+  .arrow { font-size: 24px; margin-bottom: 8px; display: block; animation: bounce 1.5s infinite; }
+  @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+
+  .note { margin-top: 32px; padding: 16px 20px; background: #12162a; border-radius: 10px; border-left: 3px solid #4a6cf7; font-size: 13px; color: #8890a4; line-height: 1.6; }
+  .note b { color: #e0e4ef; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>BYU Learning Suite → Claude</h1>
+  <div class="subtitle">Connect your classes to Claude in 30 seconds. No installs needed.</div>
+
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-content">
+      <h3>Drag this button to your bookmarks bar</h3>
+      <p>Click and hold the blue button below, then drag it up to your browser's bookmarks bar. You only need to do this once.</p>
+    </div>
+  </div>
+
+  <div class="bookmarklet-area">
+    <span class="arrow">⬆</span>
+    <p>Drag this button to your bookmarks bar</p>
+    <a class="bookmarklet-btn" href="${bookmarkletCode}">📚 Connect to Claude</a>
+  </div>
+
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-content">
+      <h3>Open Learning Suite and make sure you're logged in</h3>
+      <p>Go to <a href="https://learningsuite.byu.edu" target="_blank" style="color:#7dd3fc">learningsuite.byu.edu</a> in this browser. If you can see your courses, you're good.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num">3</div>
+    <div class="step-content">
+      <h3>Click the bookmark</h3>
+      <p>While on the Learning Suite page, click the "📚 Connect to Claude" bookmark you just saved. A popup will appear with your personal connector URL.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num">4</div>
+    <div class="step-content">
+      <h3>Paste the URL in Claude Desktop</h3>
+      <p>Open Claude Desktop → Settings → Connectors → <b>+</b> → Add custom connector → paste the URL → <b>Add</b>. That's it — ask Claude about your assignments!</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>How it works:</b> The bookmark reads your Learning Suite session (the same one your browser uses) and connects it to Claude. Your BYU credentials are never shared — only the session cookie, which expires naturally. Re-run the bookmark anytime if your session expires.
+  </div>
+</div>
+</body>
+</html>`);
 });
 
 // --- Start server ---
