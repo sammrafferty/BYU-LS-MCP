@@ -28,6 +28,9 @@ import { generateToken, registerUser, getUser, listUsers, revokeUser } from "./s
 const PORT = process.env.PORT || 3847;
 const app = express();
 
+// Trust Railway's reverse proxy so req.protocol reflects the real scheme
+app.set("trust proxy", 1);
+
 // CORS — allow bookmarklet requests from LS and MCP requests from Claude
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
