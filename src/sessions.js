@@ -1,9 +1,10 @@
 // In-memory session store. Sessions survive within a deploy but are lost on container restart.
-// For durable storage, add Redis or a Railway volume.
+// Tokens are permanent per user — stored in localStorage on the LS domain.
+// Clicking the bookmark again refreshes cookies behind the same token.
 
 import { randomBytes } from "crypto";
 
-const SESSIONS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const SESSIONS_TTL_MS = 48 * 60 * 60 * 1000; // 48 hours (generous, keep-alive extends this)
 
 const sessions = new Map();
 
@@ -18,6 +19,19 @@ export function registerUser(token, authState) {
     registeredAt: new Date().toISOString(),
     lastUsed: new Date().toISOString(),
   });
+}
+
+/**
+ * Update an existing session's cookies and session code.
+ * Used when the bookmarklet is clicked again with the same token.
+ */
+export function updateUserCookies(token, cookies, sessionCode) {
+  const user = sessions.get(token);
+  if (!user) return false;
+  user.cookies = cookies;
+  user.sessionCode = sessionCode;
+  user.lastUsed = new Date().toISOString();
+  return true;
 }
 
 export function getUser(token) {

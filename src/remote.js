@@ -23,7 +23,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { randomUUID } from "crypto";
 import { createAdapter } from "./data/adapter.js";
 import { registerTools } from "./tools/index.js";
-import { generateToken, registerUser, getUser, listUsers, revokeUser } from "./sessions.js";
+import { generateToken, registerUser, updateUserCookies, getUser, listUsers, revokeUser } from "./sessions.js";
 
 const PORT = process.env.PORT || 3847;
 const app = express();
@@ -150,10 +150,28 @@ app.post("/auth/register", async (req, res) => {
     });
   }
 
-  const token = generateToken();
-  registerUser(token, { cookies, sessionCode });
+  // If the bookmarklet sends an existing token, reuse it (stable URL)
+  const { existingToken } = req.body;
+  let token;
 
-  console.log(`[AUTH] New user registered (token: ${token.slice(0, 8)}...)`);
+  if (existingToken && getUser(existingToken)) {
+    // Refresh cookies behind the same token
+    updateUserCookies(existingToken, cookies, sessionCode);
+    token = existingToken;
+    console.log(`[AUTH] Session refreshed (token: ${token.slice(0, 8)}...)`);
+  } else if (existingToken) {
+    // Token from before a server restart — recreate with same token
+    registerUser(existingToken, { cookies, sessionCode });
+    token = existingToken;
+    console.log(`[AUTH] Session restored (token: ${token.slice(0, 8)}...)`);
+  } else {
+    // First time — new token
+    token = generateToken();
+    registerUser(token, { cookies, sessionCode });
+    console.log(`[AUTH] New user registered (token: ${token.slice(0, 8)}...)`);
+  }
+
+  startKeepAlive(token);
 
   res.json({
     token,
@@ -523,6 +541,55 @@ app.get("/", (req, res) => {
 </body>
 </html>`);
 });
+
+// --- Session keep-alive ---
+// Pings LS every 14 minutes to prevent PHP session timeout.
+// Stops after 2 hours of no MCP activity to avoid waste.
+
+const keepAliveIntervals = new Map();
+const KEEP_ALIVE_MS = 14 * 60 * 1000; // 14 minutes
+const KEEP_ALIVE_MAX_IDLE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function startKeepAlive(token) {
+  stopKeepAlive(token);
+
+  const interval = setInterval(async () => {
+    const user = getUser(token);
+    if (!user) { stopKeepAlive(token); return; }
+
+    // Stop if user hasn't been active via MCP in 2 hours
+    const lastUsed = new Date(user.lastUsed).getTime();
+    if (Date.now() - lastUsed > KEEP_ALIVE_MAX_IDLE_MS) {
+      console.log(`[KEEPALIVE] Stopping for ${token.slice(0, 8)}... (idle >2h)`);
+      stopKeepAlive(token);
+      return;
+    }
+
+    // Ping LS dashboard to keep PHP session alive
+    const cookieHeader = user.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    try {
+      await fetch(`https://learningsuite.byu.edu/.${user.sessionCode}/student/top`, {
+        headers: { Cookie: cookieHeader, "User-Agent": "Mozilla/5.0" },
+        redirect: "manual",
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch {
+      // Ping failed — session may have expired, stop pinging
+      console.log(`[KEEPALIVE] Ping failed for ${token.slice(0, 8)}...`);
+      stopKeepAlive(token);
+    }
+  }, KEEP_ALIVE_MS);
+
+  keepAliveIntervals.set(token, interval);
+}
+
+function stopKeepAlive(token) {
+  const interval = keepAliveIntervals.get(token);
+  if (interval) {
+    clearInterval(interval);
+    keepAliveIntervals.delete(token);
+  }
+}
 
 // --- Start server ---
 

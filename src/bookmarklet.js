@@ -1,6 +1,10 @@
 /**
  * Bookmarklet script — loaded dynamically when user clicks the bookmark.
  * Styled after 35mm film editorial aesthetic.
+ *
+ * Token persistence: stores the token in localStorage on the LS domain.
+ * Clicking the bookmark again refreshes cookies behind the same token,
+ * so the connector URL in Claude Desktop never needs to change.
  */
 
 (function () {
@@ -23,19 +27,39 @@
     return;
   }
 
-  showOverlay("CONNECTING", "Reading your session...", null, false);
+  // Check for existing token from a previous bookmarklet click
+  var existingToken = null;
+  try { existingToken = localStorage.getItem("_byu_mcp_token"); } catch (e) {}
+
+  var isRefresh = !!existingToken;
+  showOverlay(
+    isRefresh ? "REFRESHING" : "CONNECTING",
+    isRefresh ? "Updating your session..." : "Reading your session...",
+    null, false
+  );
 
   var SERVER = "%%SERVER_URL%%";
 
   fetch(SERVER + "/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cookies: cookies, sessionCode: sessionCode }),
+    body: JSON.stringify({
+      cookies: cookies,
+      sessionCode: sessionCode,
+      existingToken: existingToken,
+    }),
   })
     .then(function (res) { return res.json(); })
     .then(function (data) {
       if (data.error) throw new Error(data.error);
-      showOverlay("CONNECTED", "Copy this URL into Claude Desktop", SERVER + data.mcpUrl, false);
+      // Store token for future clicks — same URL forever
+      try { localStorage.setItem("_byu_mcp_token", data.token); } catch (e) {}
+      var url = SERVER + data.mcpUrl;
+      if (isRefresh) {
+        showOverlay("REFRESHED", "Session updated — same URL, no changes needed in Claude", url, false);
+      } else {
+        showOverlay("CONNECTED", "Copy this URL into Claude Desktop", url, false);
+      }
     })
     .catch(function (err) {
       showOverlay("ERROR", err.message, null, true);
