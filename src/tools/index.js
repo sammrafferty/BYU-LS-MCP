@@ -2,13 +2,38 @@ import { z } from "zod";
 
 function formatResult(results) {
   if (results && results.error) {
+    let hint = "";
+    if (results.errorCode === "SESSION_EXPIRED") {
+      hint = "\n\nTo fix: Go to learningsuite.byu.edu, log in, and click the 'Connect to Claude' bookmark.";
+    } else if (results.errorCode === "PARSE_ERROR") {
+      hint = "\n\nThis may mean BYU Learning Suite changed their page format. Try again, or report this issue.";
+    } else if (results.errorCode === "TIMEOUT") {
+      hint = "\n\nBYU Learning Suite may be slow. Try again in a moment.";
+    }
     return {
       isError: true,
-      content: [{ type: "text", text: results.error }],
+      content: [{ type: "text", text: results.error + hint }],
     };
   }
+
+  let text = JSON.stringify(results, null, 2);
+
+  // Append warnings for partial failures
+  const warnings = Array.isArray(results) ? results._warnings : results?._warnings;
+  if (warnings?.length) {
+    if (Array.isArray(results)) {
+      // For arrays, _warnings is a non-enumerable-like property — JSON.stringify ignores it
+      text += "\n\nWarnings:\n" + warnings.map(w => "- " + w).join("\n");
+    } else {
+      // For objects, remove _warnings from the JSON output
+      const { _warnings, ...clean } = results;
+      text = JSON.stringify(clean, null, 2);
+      text += "\n\nWarnings:\n" + warnings.map(w => "- " + w).join("\n");
+    }
+  }
+
   return {
-    content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+    content: [{ type: "text", text }],
   };
 }
 
@@ -247,7 +272,7 @@ export function registerTools(server, data) {
 
   server.tool(
     "submit_assignment",
-    "Submits a file to BYU Learning Suite for a specific assignment. Requires the local file path. EXPERIMENTAL — use with caution.",
+    "EXPERIMENTAL — may not work reliably. Attempts to submit a file to BYU Learning Suite. IMPORTANT: Always verify the submission appeared on learningsuite.byu.edu after using this tool. In remote/connector mode, the server cannot access files on your computer.",
     {
       course: z.string().describe("Course name or code"),
       assignment: z.string().describe("Assignment name"),

@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { loadAuthState } from "../auth/state.js";
 import { createHttpClient } from "../scraper/http.js";
 import { SessionExpiredError, ParseError } from "../scraper/errors.js";
+import { wrapErrors } from "../scraper/wrapErrors.js";
 import { readFileSync, existsSync } from "fs";
 import {
   parseCourseList,
@@ -67,22 +68,6 @@ export async function createScraperDataSource(authStateOverride = null) {
     return data;
   }
 
-  function wrapErrors(fn) {
-    return async (params) => {
-      try {
-        return await fn(params);
-      } catch (err) {
-        if (err instanceof SessionExpiredError) {
-          return { error: err.message };
-        }
-        if (err instanceof ParseError) {
-          return { error: `Parse error: ${err.message}` };
-        }
-        return { error: `Error: ${err.message}` };
-      }
-    };
-  }
-
   return {
     getAssignments: wrapErrors(async ({ course, daysAhead = 14 } = {}) => {
       const now = new Date();
@@ -90,34 +75,44 @@ export async function createScraperDataSource(authStateOverride = null) {
       const courses = await getCourses();
       const filtered = courses.filter((c) => matchesCourse(c, course));
       const results = [];
+      const warnings = [];
 
       for (const c of filtered) {
-        const gb = await getGradebookData(c);
-        for (const a of gb.rawAssignments) {
-          if (!a.dueDate) continue;
-          // LS dates are in "YYYY-MM-DD HH:MM:SS" format (Mountain Time)
-          const due = new Date(a.dueDate.replace(" ", "T") + "-07:00");
-          if (due < now || due > cutoff) continue;
+        try {
+          const gb = await getGradebookData(c);
+          for (const a of gb.rawAssignments) {
+            if (!a.dueDate) continue;
+            // LS dates are in "YYYY-MM-DD HH:MM:SS" format (Mountain Time)
+            const due = new Date(a.dueDate.replace(" ", "T") + "-07:00");
+            if (due < now || due > cutoff) continue;
 
-          const hasScore = gb.rawScores.has(a.id);
-          const catInfo = gb.categories.find(
-            (cat) =>
-              cat.name ===
-              (gb.assignmentScores.find((as) => as.title === a.name) || {}).category
-          );
+            const hasScore = gb.rawScores.has(a.id);
+            const catInfo = gb.categories.find(
+              (cat) =>
+                cat.name ===
+                (gb.assignmentScores.find((as) => as.title === a.name) || {}).category
+            );
 
-          results.push({
-            courseName: c.courseName,
-            title: a.name,
-            dueDate: due.toISOString(),
-            pointsPossible: a.points,
-            status: hasScore ? "submitted" : "not submitted",
-            category: inferAssignmentCategory(a, catInfo),
-          });
+            results.push({
+              courseName: c.courseName,
+              title: a.name,
+              dueDate: due.toISOString(),
+              pointsPossible: a.points,
+              status: hasScore ? "submitted" : "not submitted",
+              category: inferAssignmentCategory(a, catInfo),
+            });
+          }
+        } catch (err) {
+          if (err instanceof SessionExpiredError) throw err;
+          warnings.push(`Could not load ${c.courseName}: ${err.message}`);
         }
       }
 
-      return results.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+      const sorted = results.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+      if (warnings.length > 0) {
+        sorted._warnings = warnings;
+      }
+      return sorted;
     }),
 
     getGrades: wrapErrors(async ({ course } = {}) => {
@@ -139,15 +134,24 @@ export async function createScraperDataSource(authStateOverride = null) {
       }
 
       const summaries = [];
+      const warnings = [];
       for (const c of courses) {
-        const gb = await getGradebookData(c);
-        summaries.push({
-          courseName: c.courseName,
-          courseCode: c.courseCode,
-          currentPercentage: gb.currentPercentage,
-          letterGrade: gb.letterGrade,
-          categories: gb.categories,
-        });
+        try {
+          const gb = await getGradebookData(c);
+          summaries.push({
+            courseName: c.courseName,
+            courseCode: c.courseCode,
+            currentPercentage: gb.currentPercentage,
+            letterGrade: gb.letterGrade,
+            categories: gb.categories,
+          });
+        } catch (err) {
+          if (err instanceof SessionExpiredError) throw err;
+          warnings.push(`Could not load ${c.courseName}: ${err.message}`);
+        }
+      }
+      if (warnings.length > 0) {
+        summaries._warnings = warnings;
       }
       return summaries;
     }),
@@ -220,56 +224,72 @@ export async function createScraperDataSource(authStateOverride = null) {
       const courses = await getCourses();
       const filtered = courses.filter((c) => matchesCourse(c, course));
       const results = [];
+      const warnings = [];
 
       for (const c of filtered) {
-        const cacheKey = `exams-${c.courseId}`;
-        let exams = getCached(cacheKey);
-        if (!exams) {
-          const html = await http.get(`cid-${c.courseId}/student/exam`);
-          exams = parseCourseExams(html);
-          setCache(cacheKey, exams);
-        }
+        try {
+          const cacheKey = `exams-${c.courseId}`;
+          let exams = getCached(cacheKey);
+          if (!exams) {
+            const html = await http.get(`cid-${c.courseId}/student/exam`);
+            exams = parseCourseExams(html);
+            setCache(cacheKey, exams);
+          }
 
-        for (const e of exams) {
-          const examDate = e.examDate ? new Date(e.examDate) : null;
-          if (examDate && examDate < now) continue;
+          for (const e of exams) {
+            const examDate = e.examDate ? new Date(e.examDate) : null;
+            if (examDate && examDate < now) continue;
 
-          results.push({
-            courseName: c.courseName,
-            title: e.title,
-            examDate: e.examDate,
-            startWindow: e.startWindow,
-            endWindow: e.endWindow,
-            location: null, // LS doesn't specify testing center vs in-class
-            notes: e.status === "complete" ? "Completed" : null,
-          });
+            results.push({
+              courseName: c.courseName,
+              title: e.title,
+              examDate: e.examDate,
+              startWindow: e.startWindow,
+              endWindow: e.endWindow,
+              location: null, // LS doesn't specify testing center vs in-class
+              notes: e.status === "complete" ? "Completed" : null,
+            });
+          }
+        } catch (err) {
+          if (err instanceof SessionExpiredError) throw err;
+          warnings.push(`Could not load ${c.courseName}: ${err.message}`);
         }
       }
 
-      return results.sort(
+      const sorted = results.sort(
         (a, b) => new Date(a.examDate || "9999") - new Date(b.examDate || "9999")
       );
+      if (warnings.length > 0) {
+        sorted._warnings = warnings;
+      }
+      return sorted;
     }),
 
     getContent: wrapErrors(async ({ course } = {}) => {
       const courses = await getCourses();
       const filtered = courses.filter((c) => matchesCourse(c, course));
       const results = [];
+      const warnings = [];
 
       for (const c of filtered) {
-        const cacheKey = `content-${c.courseId}`;
-        let items = getCached(cacheKey);
-        if (!items) {
-          const html = await http.get(`cid-${c.courseId}/student/pages`);
-          items = parseCourseContent(html);
-          setCache(cacheKey, items);
-        }
+        try {
+          const cacheKey = `content-${c.courseId}`;
+          let items = getCached(cacheKey);
+          if (!items) {
+            const html = await http.get(`cid-${c.courseId}/student/pages`);
+            items = parseCourseContent(html);
+            setCache(cacheKey, items);
+          }
 
-        for (const item of items) {
-          results.push({
-            courseName: c.courseName,
-            ...item,
-          });
+          for (const item of items) {
+            results.push({
+              courseName: c.courseName,
+              ...item,
+            });
+          }
+        } catch (err) {
+          if (err instanceof SessionExpiredError) throw err;
+          warnings.push(`Could not load ${c.courseName}: ${err.message}`);
         }
       }
 
@@ -285,6 +305,9 @@ export async function createScraperDataSource(authStateOverride = null) {
         ];
       }
 
+      if (warnings.length > 0) {
+        results._warnings = warnings;
+      }
       return results;
     }),
 
@@ -531,70 +554,80 @@ export async function createScraperDataSource(authStateOverride = null) {
       const courses = await getCourses();
       const filtered = courses.filter((c) => matchesCourse(c, course));
       const deadlines = [];
+      const warnings = [];
 
       for (const c of filtered) {
-        const gb = await getGradebookData(c);
+        try {
+          const gb = await getGradebookData(c);
 
-        for (const a of gb.rawAssignments) {
-          if (!a.dueDate || gb.rawScores.has(a.id)) continue;
-          const due = new Date(a.dueDate.replace(" ", "T") + "-07:00");
-          if (due < now || due > cutoff) continue;
+          for (const a of gb.rawAssignments) {
+            if (!a.dueDate || gb.rawScores.has(a.id)) continue;
+            const due = new Date(a.dueDate.replace(" ", "T") + "-07:00");
+            if (due < now || due > cutoff) continue;
 
-          const daysUntil = Math.ceil((due - now) / (1000 * 60 * 60 * 24));
-          const catWeight = gb.categories.find(
-            (cat) => cat.name === (gb.assignmentScores.find((as) => as.title === a.name) || {}).category
-          )?.weight || 0;
+            const daysUntil = Math.ceil((due - now) / (1000 * 60 * 60 * 24));
+            const catWeight = gb.categories.find(
+              (cat) => cat.name === (gb.assignmentScores.find((as) => as.title === a.name) || {}).category
+            )?.weight || 0;
 
-          // Priority: higher points × category weight, adjusted by urgency
-          const urgencyMultiplier = daysUntil <= 2 ? 3 : daysUntil <= 7 ? 2 : 1;
-          const priority = a.points * (catWeight / 100) * urgencyMultiplier;
+            // Priority: higher points × category weight, adjusted by urgency
+            const urgencyMultiplier = daysUntil <= 2 ? 3 : daysUntil <= 7 ? 2 : 1;
+            const priority = a.points * (catWeight / 100) * urgencyMultiplier;
 
-          deadlines.push({
-            courseName: c.courseName,
-            courseCode: c.courseCode,
-            title: a.name,
-            dueDate: due.toISOString(),
-            dueDateFormatted: a.fullDueTime || null,
-            daysUntil,
-            pointsPossible: a.points,
-            categoryWeight: `${catWeight}%`,
-            priority: Math.round(priority * 100) / 100,
-            type: inferAssignmentCategory(a, { name: gb.assignmentScores.find((as) => as.title === a.name)?.category || "" }),
-          });
-        }
+            deadlines.push({
+              courseName: c.courseName,
+              courseCode: c.courseCode,
+              title: a.name,
+              dueDate: due.toISOString(),
+              dueDateFormatted: a.fullDueTime || null,
+              daysUntil,
+              pointsPossible: a.points,
+              categoryWeight: `${catWeight}%`,
+              priority: Math.round(priority * 100) / 100,
+              type: inferAssignmentCategory(a, { name: gb.assignmentScores.find((as) => as.title === a.name)?.category || "" }),
+            });
+          }
 
-        // Also include exams
-        const cacheKey = `exams-${c.courseId}`;
-        let exams = getCached(cacheKey);
-        if (!exams) {
-          try {
-            const html = await http.get(`cid-${c.courseId}/student/exam`);
-            const { parseCourseExams } = await import("../scraper/parsers.js");
-            exams = parseCourseExams(html);
-            setCache(cacheKey, exams);
-          } catch { exams = []; }
-        }
-        for (const e of exams) {
-          if (!e.startWindow || e.status === "complete") continue;
-          const examDate = new Date(e.startWindow.replace(" ", "T") + "-07:00");
-          if (examDate < now || examDate > cutoff) continue;
-          const daysUntil = Math.ceil((examDate - now) / (1000 * 60 * 60 * 24));
+          // Also include exams
+          const cacheKey = `exams-${c.courseId}`;
+          let exams = getCached(cacheKey);
+          if (!exams) {
+            try {
+              const html = await http.get(`cid-${c.courseId}/student/exam`);
+              const { parseCourseExams } = await import("../scraper/parsers.js");
+              exams = parseCourseExams(html);
+              setCache(cacheKey, exams);
+            } catch { exams = []; }
+          }
+          for (const e of exams) {
+            if (!e.startWindow || e.status === "complete") continue;
+            const examDate = new Date(e.startWindow.replace(" ", "T") + "-07:00");
+            if (examDate < now || examDate > cutoff) continue;
+            const daysUntil = Math.ceil((examDate - now) / (1000 * 60 * 60 * 24));
 
-          deadlines.push({
-            courseName: c.courseName,
-            courseCode: c.courseCode,
-            title: e.title,
-            dueDate: examDate.toISOString(),
-            daysUntil,
-            pointsPossible: null,
-            categoryWeight: null,
-            priority: daysUntil <= 2 ? 999 : 500,
-            type: "exam",
-          });
+            deadlines.push({
+              courseName: c.courseName,
+              courseCode: c.courseCode,
+              title: e.title,
+              dueDate: examDate.toISOString(),
+              daysUntil,
+              pointsPossible: null,
+              categoryWeight: null,
+              priority: daysUntil <= 2 ? 999 : 500,
+              type: "exam",
+            });
+          }
+        } catch (err) {
+          if (err instanceof SessionExpiredError) throw err;
+          warnings.push(`Could not load ${c.courseName}: ${err.message}`);
         }
       }
 
-      return deadlines.sort((a, b) => b.priority - a.priority);
+      const sorted = deadlines.sort((a, b) => b.priority - a.priority);
+      if (warnings.length > 0) {
+        sorted._warnings = warnings;
+      }
+      return sorted;
     }),
 
     getUniversityCalendar: wrapErrors(async () => {
@@ -667,29 +700,38 @@ export async function createScraperDataSource(authStateOverride = null) {
       const courses = await getCourses();
       const filtered = courses.filter((c) => matchesCourse(c, course));
       const results = [];
+      const warnings = [];
 
       for (const c of filtered) {
-        const gb = await getGradebookData(c);
-        for (const a of gb.rawAssignments) {
-          const nameMatch = a.name.toLowerCase().includes(search);
-          const descMatch = (a.description || "").toLowerCase().includes(search);
-          if (!nameMatch && !descMatch) continue;
+        try {
+          const gb = await getGradebookData(c);
+          for (const a of gb.rawAssignments) {
+            const nameMatch = a.name.toLowerCase().includes(search);
+            const descMatch = (a.description || "").toLowerCase().includes(search);
+            if (!nameMatch && !descMatch) continue;
 
-          const hasScore = gb.rawScores.has(a.id);
-          results.push({
-            courseName: c.courseName,
-            courseCode: c.courseCode,
-            title: a.name,
-            dueDate: a.dueDate,
-            pointsPossible: a.points,
-            status: hasScore ? "graded" : "not submitted",
-            score: hasScore ? gb.rawScores.get(a.id) : null,
-            hasFiles: (a.description || "").includes("fileDownload"),
-            matchedIn: nameMatch ? "title" : "description",
-          });
+            const hasScore = gb.rawScores.has(a.id);
+            results.push({
+              courseName: c.courseName,
+              courseCode: c.courseCode,
+              title: a.name,
+              dueDate: a.dueDate,
+              pointsPossible: a.points,
+              status: hasScore ? "graded" : "not submitted",
+              score: hasScore ? gb.rawScores.get(a.id) : null,
+              hasFiles: (a.description || "").includes("fileDownload"),
+              matchedIn: nameMatch ? "title" : "description",
+            });
+          }
+        } catch (err) {
+          if (err instanceof SessionExpiredError) throw err;
+          warnings.push(`Could not load ${c.courseName}: ${err.message}`);
         }
       }
 
+      if (warnings.length > 0) {
+        results._warnings = warnings;
+      }
       return results;
     }),
 
@@ -751,7 +793,7 @@ export async function createScraperDataSource(authStateOverride = null) {
   };
 }
 
-function recalculateGrade(assignments, categories, scoreMap) {
+export function recalculateGrade(assignments, categories, scoreMap) {
   // Build category lookup from the categories array
   const catTotals = new Map();
   for (const cat of categories) {
@@ -787,7 +829,7 @@ function recalculateGrade(assignments, categories, scoreMap) {
   return { percentage };
 }
 
-function lookupLetterGrade(percentage, gb) {
+export function lookupLetterGrade(percentage, gb) {
   if (!gb._gradeScale || !gb._gradeScale.items || percentage === null) return null;
   const sorted = Object.entries(gb._gradeScale.items).sort((a, b) => b[1] - a[1]);
   for (const [letter, threshold] of sorted) {

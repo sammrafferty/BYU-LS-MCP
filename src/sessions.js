@@ -60,3 +60,5 @@ export function listUsers() {
     lastUsed: data.lastUsed,
   }));
 }
+
+export { sessions as _sessions };

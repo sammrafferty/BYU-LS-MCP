@@ -281,7 +281,7 @@ app.all("/mcp/:token", async (req, res) => {
 
   if (!user) {
     return res.status(401).json({
-      error: "Invalid or expired token. Run 'npm run auth:remote' to authenticate.",
+      error: "Invalid or expired token. Go to learningsuite.byu.edu, log in, and click the 'Connect to Claude' bookmark to reconnect.",
     });
   }
 

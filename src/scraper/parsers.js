@@ -14,7 +14,7 @@ import { ParseError } from "./errors.js";
  * Extracts a JSON array or object that follows `prefix` in the HTML.
  * Handles nested brackets and string escapes correctly.
  */
-function extractJSONAfter(html, prefix) {
+export function extractJSONAfter(html, prefix) {
   const idx = html.indexOf(prefix);
   if (idx === -1) return null;
 
@@ -56,7 +56,18 @@ function extractJSONAfter(html, prefix) {
   return JSON.parse(html.slice(start, i));
 }
 
-function stripHtml(html) {
+function requireJSONAfter(html, prefix, pageName) {
+  const data = extractJSONAfter(html, prefix);
+  if (data === null) {
+    throw new ParseError(
+      pageName,
+      `Expected "${prefix}" in the page HTML but it was not found. BYU Learning Suite may have changed their page format.`
+    );
+  }
+  return data;
+}
+
+export function stripHtml(html) {
   return html
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
@@ -78,9 +89,9 @@ function stripHtml(html) {
  * Source: instance.initialCourseGroups = {...}
  */
 export function parseCourseList(html) {
-  const data = extractJSONAfter(html, "initialCourseGroups = ");
-  if (!data || !data.data) {
-    throw new ParseError("dashboard", "Could not find initialCourseGroups data.");
+  const data = requireJSONAfter(html, "initialCourseGroups = ", "dashboard");
+  if (!data.data) {
+    throw new ParseError("dashboard", "initialCourseGroups found but missing data property.");
   }
 
   const courses = [];
@@ -259,11 +270,7 @@ export function parseGradebook(html) {
  * Source: CourseGradeSummaryDriver.init({ courseData: [...] })
  */
 export function parseGradeSummary(html) {
-  const courseData = extractJSONAfter(html, "courseData: ");
-  if (!courseData) {
-    throw new ParseError("grade-summary", "Could not find courseData.");
-  }
-  return courseData;
+  return requireJSONAfter(html, "courseData: ", "grade-summary");
 }
 
 /**
@@ -271,10 +278,7 @@ export function parseGradeSummary(html) {
  * Source: allAnnouncements: [...]
  */
 export function parseAllAnnouncements(html) {
-  const announcements = extractJSONAfter(html, "allAnnouncements: ");
-  if (!announcements) {
-    throw new ParseError("announcements", "Could not find allAnnouncements data.");
-  }
+  const announcements = requireJSONAfter(html, "allAnnouncements: ", "announcements");
 
   return announcements.map((item) => {
     const a = item.announcement;
@@ -299,10 +303,7 @@ export function parseAllAnnouncements(html) {
  * sectionInfo format: "2:00 TNRB 184"
  */
 export function parseGlobalSchedule(html) {
-  const courses = extractJSONAfter(html, "var courseInformation = ");
-  if (!courses) {
-    throw new ParseError("schedule", "Could not find courseInformation data.");
-  }
+  const courses = requireJSONAfter(html, "var courseInformation = ", "schedule");
 
   return courses.map((c) => {
     const info = c.sectionInfo || "";
