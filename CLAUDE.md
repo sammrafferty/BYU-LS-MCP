@@ -20,10 +20,11 @@ No test suite exists yet.
 
 ## Architecture
 
-Two operating modes, same tools:
+Three operating modes, same tools:
 
 **Local** (`src/index.js`): stdio transport → Claude Desktop reads from `claude_desktop_config.json`
-**Remote** (`src/remote.js`): HTTP/SSE transport → Claude Desktop connects via custom connector URL (`/mcp/:token`)
+**Remote OAuth** (`src/remote.js`): OAuth 2.1 → claude.ai discovers at `/.well-known/oauth-authorization-server`, authenticates via `/authorize`, uses Bearer token on `/mcp`
+**Remote Legacy** (`src/remote.js`): Direct token → bookmarklet provides `/mcp/:token` URL for Claude Desktop
 
 ### Data Flow
 
@@ -59,24 +60,39 @@ Key LS URL patterns:
 
 Score-to-assignment mapping uses `assignment.gbAssignmentID` (NOT `assignment.id`).
 
-### Remote Server Auth
+### Authentication & OAuth 2.1
 
-Two methods send cookies to the server:
+**OAuth flow (claude.ai):**
+1. Claude.ai discovers OAuth endpoints at `/.well-known/oauth-authorization-server`
+2. Registers a client at `POST /register`
+3. Opens `/authorize` — shows instructions to log into LS + click bookmarklet
+4. Bookmarklet sends cookies + `flowId` to `POST /auth/register`
+5. Authorize page polls `/auth/flow-status/:flowId`, auto-redirects when complete
+6. Claude.ai exchanges code for access token at `POST /token`
+7. MCP requests go to `/mcp` with `Authorization: Bearer <token>`
 
-1. **Chrome Extension (recommended)**: Background service worker (`extension/background.js`) reads LS cookies via `chrome.cookies` API every 10 minutes and POSTs to `/auth/register`. Also triggers immediately when a new PHPSESSID appears (user just logged in). Fully automatic — user never needs to click anything after initial setup.
+**OAuth provider** (`src/auth/oauth-provider.js`): Implements `OAuthServerProvider` from the MCP SDK. Uses the SDK's `mcpAuthRouter` for all standard endpoints. Stores clients, auth codes, and access tokens in `oauth-state.json`.
 
-2. **Bookmarklet (fallback)**: `src/bookmarklet.js` runs on the LS page, reads `document.cookie`, and POSTs to `/auth/register`. Manual click required.
+**Cookie delivery** — three methods:
+1. **Bookmarklet** (`src/bookmarklet.js`): Runs on LS page, reads `document.cookie`, POSTs to `/auth/register`. Supports `flowId` param for OAuth flows.
+2. **Chrome Extension** (`extension/background.js`): Background service worker sends cookies every 10 min. Auto-refreshes on new PHPSESSID.
+3. **CLI** (`src/auth/remote-login.js`): Playwright opens browser, user logs in, cookies sent to server.
 
-Both methods: server generates a token, stores cookies in `sessions.json` (file-backed, survives process restarts). Token is stored in Chrome extension storage / LS localStorage for reuse. Each `/mcp/:token` request creates a per-user scraper instance.
-
-Sessions persist to disk (`sessions.json`) and reload on server startup. Keep-alive pings LS every 8 minutes with retry logic (3 failures before stopping).
+**Session management** (`src/sessions.js`): File-backed Map persisted to `sessions.json`. 7-day TTL. Keep-alive pings LS every 8 min with retry logic.
 
 ### Error Pattern
 
 All adapter methods are wrapped with `wrapErrors()` — catches `SessionExpiredError` and `ParseError`, returns `{ error: "message" }` instead of throwing. Tools check for `.error` property and set `isError: true` in MCP response via `formatResult()`.
+
+## Environment Variables
+
+- `PORT` — Server port (default: 3847)
+- `SERVER_URL` — Full public URL for OAuth metadata (e.g., `https://byu-ls-mcp-production.up.railway.app`). Required for production.
+- `MCP_DANGEROUSLY_ALLOW_INSECURE_ISSUER_URL` — Set to `true` for local dev with `http://localhost`
 
 ## Deployed At
 
 - **Railway**: `byu-ls-mcp-production.up.railway.app` (auto-deploys from GitHub main)
 - **GitHub**: `github.com/sammrafferty/BYU-LS-MCP`
 - Pushes to main trigger Railway rebuild via Dockerfile
+- Railway env var `SERVER_URL` must be set to `https://byu-ls-mcp-production.up.railway.app`

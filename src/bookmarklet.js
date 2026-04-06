@@ -5,6 +5,10 @@
  * Token persistence: stores the token in localStorage on the LS domain.
  * Clicking the bookmark again refreshes cookies behind the same token,
  * so the connector URL in Claude Desktop never needs to change.
+ *
+ * OAuth flow support: when loaded with ?flow=FLOW_ID, includes the
+ * flowId in the registration request so the OAuth authorize page
+ * can detect completion and redirect back to claude.ai.
  */
 
 (function () {
@@ -23,9 +27,22 @@
   var sessionCode = sessionMatch ? sessionMatch[1] : "";
 
   if (!cookies || !cookies.includes("PHPSESSID")) {
-    showOverlay("NOT LOGGED IN", "Log in to Learning Suite first, then click this bookmark again.", null, true);
+    showOverlay("NOT LOGGED IN", "Log in to Learning Suite first, then click this bookmark again.", null, true, false);
     return;
   }
+
+  // Detect OAuth flow ID from script URL (set when loaded from authorize page)
+  var flowId = null;
+  try {
+    var scripts = document.getElementsByTagName("script");
+    for (var i = scripts.length - 1; i >= 0; i--) {
+      var src = scripts[i].src || "";
+      var flowMatch = src.match(/[?&]flow=([^&]+)/);
+      if (flowMatch) { flowId = flowMatch[1]; break; }
+    }
+  } catch (e) {}
+
+  var isOAuthFlow = !!flowId;
 
   // Check for existing token from a previous bookmarklet click
   var existingToken = null;
@@ -33,39 +50,48 @@
 
   var isRefresh = !!existingToken;
   showOverlay(
-    isRefresh ? "REFRESHING" : "CONNECTING",
-    isRefresh ? "Updating your session..." : "Reading your session...",
-    null, false
+    isOAuthFlow ? "CONNECTING" : (isRefresh ? "REFRESHING" : "CONNECTING"),
+    isOAuthFlow ? "Linking to Claude..." : (isRefresh ? "Updating your session..." : "Reading your session..."),
+    null, false, false
   );
 
   var SERVER = "%%SERVER_URL%%";
 
+  var body = {
+    cookies: cookies,
+    sessionCode: sessionCode,
+    existingToken: existingToken,
+  };
+  if (flowId) body.flowId = flowId;
+
   fetch(SERVER + "/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      cookies: cookies,
-      sessionCode: sessionCode,
-      existingToken: existingToken,
-    }),
+    body: JSON.stringify(body),
   })
     .then(function (res) { return res.json(); })
     .then(function (data) {
       if (data.error) throw new Error(data.error);
       // Store token for future clicks — same URL forever
       try { localStorage.setItem("_byu_mcp_token", data.token); } catch (e) {}
-      var url = SERVER + data.mcpUrl;
-      if (isRefresh) {
-        showOverlay("REFRESHED", "Session updated — same URL, no changes needed in Claude", url, false);
+
+      if (isOAuthFlow && data.flowCompleted) {
+        // OAuth flow — the authorize page will auto-redirect to claude.ai
+        showOverlay("CONNECTED", "Return to the other tab — Claude is connecting automatically.", null, false, true);
       } else {
-        showOverlay("CONNECTED", "Copy this URL into Claude Desktop", url, false);
+        var url = SERVER + data.mcpUrl;
+        if (isRefresh) {
+          showOverlay("REFRESHED", "Session updated — same URL, no changes needed in Claude", url, false, false);
+        } else {
+          showOverlay("CONNECTED", "Copy this URL into Claude Desktop", url, false, false);
+        }
       }
     })
     .catch(function (err) {
-      showOverlay("ERROR", err.message, null, true);
+      showOverlay("ERROR", err.message, null, true, false);
     });
 
-  function showOverlay(title, subtitle, url, isError) {
+  function showOverlay(title, subtitle, url, isError, isOAuthDone) {
     var old = document.getElementById("_byu_mcp");
     if (old) old.remove();
 
@@ -94,6 +120,22 @@
     sub.style.cssText = "font-family:'Space Mono',monospace;font-size:12px;color:#555;letter-spacing:1px;text-transform:uppercase;margin-bottom:28px";
     sub.textContent = subtitle;
     card.appendChild(sub);
+
+    if (isOAuthDone) {
+      // Show a check mark and auto-close message
+      var check = document.createElement("div");
+      check.style.cssText = "font-size:48px;color:#4ade80;margin-bottom:16px";
+      check.textContent = "\u2713";
+      card.insertBefore(check, card.firstChild.nextSibling);
+
+      var note = document.createElement("div");
+      note.style.cssText = "font-family:'Space Mono',monospace;font-size:11px;color:#444;line-height:1.8";
+      note.textContent = "You can close this overlay.";
+      card.appendChild(note);
+
+      // Auto-close after 5 seconds
+      setTimeout(function () { overlay.remove(); }, 5000);
+    }
 
     if (url) {
       var line = document.createElement("div");

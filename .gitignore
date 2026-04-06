@@ -1,4 +1,5 @@
 node_modules/
 auth-state.json
 sessions.json
+oauth-state.json
 debug/

@@ -3,15 +3,11 @@
 /**
  * Remote MCP server for BYU Learning Suite.
  *
- * Serves the MCP protocol over HTTP so anyone with Claude Desktop
- * can add it as a custom connector. Each user authenticates separately
- * via the CLI auth tool and gets a personal token.
+ * Two authentication paths:
+ * 1. OAuth 2.1 (claude.ai): /mcp with Bearer token — discovered via .well-known
+ * 2. Legacy (Claude Desktop): /mcp/:token — bookmarklet provides URL directly
  *
- * Usage:
- *   npm run remote          # start server
- *   npm run auth:remote     # authenticate and get a token
- *
- * Connector URL format: https://yourserver.com/mcp/YOUR_TOKEN
+ * Both paths share the same MCP tools and session management.
  */
 
 import express from "express";
@@ -20,10 +16,13 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { randomUUID } from "crypto";
 import { createAdapter } from "./data/adapter.js";
 import { registerTools } from "./tools/index.js";
 import { generateToken, registerUser, updateUserCookies, getUser, listUsers, revokeUser } from "./sessions.js";
+import { BYUOAuthProvider } from "./auth/oauth-provider.js";
 
 const PORT = process.env.PORT || 3847;
 const app = express();
@@ -31,7 +30,25 @@ const app = express();
 // Trust Railway's reverse proxy so req.protocol reflects the real scheme
 app.set("trust proxy", 1);
 
-// CORS — allow bookmarklet requests from LS and MCP requests from Claude
+// Server URL for OAuth metadata (must be known at startup)
+const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`;
+const serverUrl = new URL(SERVER_URL);
+
+// --- OAuth 2.1 setup ---
+
+const oauthProvider = new BYUOAuthProvider(serverUrl);
+
+// mcpAuthRouter installs: /authorize, /token, /register,
+// /.well-known/oauth-authorization-server, /.well-known/oauth-protected-resource/mcp
+app.use(mcpAuthRouter({
+  provider: oauthProvider,
+  issuerUrl: serverUrl,
+  scopesSupported: [],
+  resourceServerUrl: new URL("/mcp", serverUrl),
+}));
+
+// --- CORS ---
+
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
   const allowed = ["https://learningsuite.byu.edu", "http://localhost"];
@@ -39,7 +56,7 @@ app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", origin || "*");
   }
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, Accept");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, mcp-session-id, Accept");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
@@ -55,8 +72,8 @@ const activeTransports = new Map();
 
 // Simple rate limiter for auth endpoint
 const authAttempts = new Map();
-const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-const RATE_LIMIT_MAX = 5; // 5 attempts per minute per IP
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 5;
 
 function checkRateLimit(ip) {
   const now = Date.now();
@@ -68,7 +85,6 @@ function checkRateLimit(ip) {
   return true;
 }
 
-// Clean up old rate limit entries every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [ip, attempts] of authAttempts) {
@@ -77,6 +93,12 @@ setInterval(() => {
     else authAttempts.set(ip, recent);
   }
 }, 5 * 60 * 1000);
+
+// OAuth flow status polling (used by the authorize page)
+app.get("/auth/flow-status/:flowId", (req, res) => {
+  const status = oauthProvider.getFlowStatus(req.params.flowId);
+  res.json(status);
+});
 
 // Register a new user (called by bookmarklet, CLI, or Chrome extension)
 app.post("/auth/register", async (req, res) => {
@@ -107,7 +129,6 @@ app.post("/auth/register", async (req, res) => {
     return res.status(400).json({ error: "No valid cookies found. Make sure you're logged into Learning Suite." });
   }
 
-  // Verify we have the critical session cookie
   const hasSession = cookies.some((c) => c.name === "PHPSESSID");
   if (!hasSession) {
     return res.status(400).json({ error: "Session cookie not found. Please log into Learning Suite and try again." });
@@ -127,7 +148,6 @@ app.post("/auth/register", async (req, res) => {
         sessionCode = match[1];
         console.log(`[AUTH] Auto-detected session code: ${sessionCode}`);
       } else {
-        // Try following the redirect
         const probe2 = await fetch("https://learningsuite.byu.edu", {
           headers: { Cookie: cookieHeader },
           redirect: "follow",
@@ -155,17 +175,14 @@ app.post("/auth/register", async (req, res) => {
   let token;
 
   if (existingToken && getUser(existingToken)) {
-    // Refresh cookies behind the same token
     updateUserCookies(existingToken, cookies, sessionCode);
     token = existingToken;
     console.log(`[AUTH] Session refreshed (token: ${token.slice(0, 8)}...)`);
   } else if (existingToken) {
-    // Token from before a server restart — recreate with same token
     registerUser(existingToken, { cookies, sessionCode });
     token = existingToken;
     console.log(`[AUTH] Session restored (token: ${token.slice(0, 8)}...)`);
   } else {
-    // First time — new token
     token = generateToken();
     registerUser(token, { cookies, sessionCode });
     console.log(`[AUTH] New user registered (token: ${token.slice(0, 8)}...)`);
@@ -173,9 +190,20 @@ app.post("/auth/register", async (req, res) => {
 
   startKeepAlive(token);
 
+  // If this registration is part of an OAuth flow, complete it
+  const { flowId } = req.body;
+  let flowCompleted = false;
+  if (flowId) {
+    flowCompleted = oauthProvider.completeFlow(flowId, token);
+    if (flowCompleted) {
+      console.log(`[AUTH] OAuth flow ${flowId.slice(0, 8)}... linked to session`);
+    }
+  }
+
   res.json({
     token,
     mcpUrl: `/mcp/${token}`,
+    flowCompleted,
   });
 });
 
@@ -228,7 +256,7 @@ app.get("/auth/debug/:token", async (req, res) => {
         status: hasCourseData ? "working" : "auth_ok_but_no_data",
         detail: hasCourseData
           ? "Cookies work! LS returned course data."
-          : "LS returned 200 but no course data found in HTML. Page may require different rendering.",
+          : "LS returned 200 but no course data found in HTML.",
         httpStatus: 200,
         bodyLength: body.length,
         hasCourseData,
@@ -255,7 +283,7 @@ app.get("/auth/debug/:token", async (req, res) => {
   }
 });
 
-// --- MCP endpoints (per-user) ---
+// --- MCP endpoints ---
 
 async function createMcpForUser(userToken) {
   const user = getUser(userToken);
@@ -274,23 +302,12 @@ async function createMcpForUser(userToken) {
   return server;
 }
 
-// Handle MCP requests for a specific user token
-app.all("/mcp/:token", async (req, res) => {
-  const { token } = req.params;
-  const user = getUser(token);
-
-  if (!user) {
-    return res.status(401).json({
-      error: "Invalid or expired token. Go to learningsuite.byu.edu, log in, and click the 'Connect to Claude' bookmark to reconnect.",
-    });
-  }
-
-  // Get or create transport for this connection
+// Shared MCP request handler (used by both OAuth and legacy paths)
+async function handleMcpRequest(req, res, userToken) {
   const sessionId = req.headers["mcp-session-id"];
 
   if (req.method === "POST" && !sessionId) {
-    // New session — create MCP server and transport
-    const mcpServer = await createMcpForUser(token);
+    const mcpServer = await createMcpForUser(userToken);
     if (!mcpServer) {
       return res.status(500).json({ error: "Failed to initialize MCP server" });
     }
@@ -298,8 +315,8 @@ app.all("/mcp/:token", async (req, res) => {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
-        activeTransports.set(sid, { transport, mcpServer, userToken: token });
-        console.log(`[MCP] Session started: ${sid.slice(0, 8)}... (user: ${token.slice(0, 8)}...)`);
+        activeTransports.set(sid, { transport, mcpServer, userToken });
+        console.log(`[MCP] Session started: ${sid.slice(0, 8)}... (user: ${userToken.slice(0, 8)}...)`);
       },
       onsessionclosed: (sid) => {
         activeTransports.delete(sid);
@@ -319,11 +336,38 @@ app.all("/mcp/:token", async (req, res) => {
   }
 
   res.status(400).json({ error: "Invalid or missing session. Reconnect the connector." });
+}
+
+// OAuth path: /mcp with Bearer token (claude.ai connectors)
+const bearerAuth = requireBearerAuth({
+  verifier: oauthProvider,
+  requiredScopes: [],
+});
+
+app.all("/mcp", bearerAuth, async (req, res) => {
+  const sessionToken = oauthProvider.getSessionTokenForAccessToken(req.auth.token);
+  if (!sessionToken) {
+    return res.status(401).json({ error: "Session expired. Re-authenticate the connector." });
+  }
+  await handleMcpRequest(req, res, sessionToken);
+});
+
+// Legacy path: /mcp/:token (Claude Desktop + bookmarklet users)
+app.all("/mcp/:token", async (req, res) => {
+  const { token } = req.params;
+  const user = getUser(token);
+
+  if (!user) {
+    return res.status(401).json({
+      error: "Invalid or expired token. Go to learningsuite.byu.edu, log in, and click the 'Connect to Claude' bookmark to reconnect.",
+    });
+  }
+
+  await handleMcpRequest(req, res, token);
 });
 
 // --- Landing page ---
 
-// Serve bookmarklet JS (loaded dynamically, avoids all encoding issues)
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bookmarkletTemplate = readFileSync(resolve(__dirname, "bookmarklet.js"), "utf-8");
 
@@ -335,7 +379,6 @@ app.get("/bookmarklet.js", (req, res) => {
 
 app.get("/", (req, res) => {
   const SERVER = `${req.protocol}://${req.get("host")}`;
-  // Simple bookmarklet that loads the full script from the server
   const bookmarkletHref = `javascript:void(document.head.appendChild(document.createElement('script')).src='${SERVER}/bookmarklet.js?t='+Date.now())`;
 
   res.send(`<!DOCTYPE html>
@@ -356,7 +399,6 @@ app.get("/", (req, res) => {
     overflow-x: hidden;
   }
 
-  /* Film grain overlay */
   body::after {
     content: '';
     position: fixed;
@@ -368,7 +410,6 @@ app.get("/", (req, res) => {
 
   .page { max-width: 640px; margin: 0 auto; padding: 80px 32px 60px; }
 
-  /* Header */
   .hero { margin-bottom: 64px; }
   h1 {
     font-family: 'Playfair Display', serif;
@@ -387,15 +428,8 @@ app.get("/", (req, res) => {
     text-transform: uppercase;
   }
 
-  /* Divider */
-  .divider {
-    width: 100%;
-    height: 1px;
-    background: #222;
-    margin: 48px 0;
-  }
+  .divider { width: 100%; height: 1px; background: #222; margin: 48px 0; }
 
-  /* Steps */
   .step {
     display: grid;
     grid-template-columns: 40px 1fr;
@@ -419,15 +453,10 @@ app.get("/", (req, res) => {
     text-transform: uppercase;
     letter-spacing: 1px;
   }
-  .step p {
-    font-size: 13px;
-    line-height: 1.7;
-    color: #666;
-  }
+  .step p { font-size: 13px; line-height: 1.7; color: #666; }
   .step a { color: #888; text-decoration: underline; text-underline-offset: 3px; }
   .step a:hover { color: #fff; }
 
-  /* Bookmarklet */
   .drag-zone {
     text-align: center;
     margin: 48px 0;
@@ -474,9 +503,7 @@ app.get("/", (req, res) => {
     transform: translateY(-2px);
     box-shadow: 0 8px 32px rgba(255,255,255,0.08);
   }
-  .bookmarklet-btn:active { cursor: grabbing; }
 
-  /* Footer note */
   .note {
     margin-top: 64px;
     padding-top: 24px;
@@ -514,7 +541,7 @@ app.get("/", (req, res) => {
     <div class="step-num">2</div>
     <div>
       <h3>Open Learning Suite</h3>
-      <p>Go to <a href="https://learningsuite.byu.edu" target="_blank">learningsuite.byu.edu</a> and make sure you're logged in. If you can see your courses, you're good.</p>
+      <p>Go to <a href="https://learningsuite.byu.edu" target="_blank">learningsuite.byu.edu</a> and make sure you're logged in.</p>
     </div>
   </div>
 
@@ -543,15 +570,11 @@ app.get("/", (req, res) => {
 });
 
 // --- Session keep-alive ---
-// Pings LS every 8 minutes to prevent PHP session timeout.
-// Retries on failure (up to 3 consecutive failures before stopping).
-// Stops after 12 hours idle to avoid waste — the Chrome extension
-// will re-register on its next heartbeat anyway.
 
 const keepAliveIntervals = new Map();
 const keepAliveFailures = new Map();
-const KEEP_ALIVE_MS = 8 * 60 * 1000; // 8 minutes
-const KEEP_ALIVE_MAX_IDLE_MS = 12 * 60 * 60 * 1000; // 12 hours
+const KEEP_ALIVE_MS = 8 * 60 * 1000;
+const KEEP_ALIVE_MAX_IDLE_MS = 12 * 60 * 60 * 1000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 
 function startKeepAlive(token) {
@@ -562,7 +585,6 @@ function startKeepAlive(token) {
     const user = getUser(token);
     if (!user) { stopKeepAlive(token); return; }
 
-    // Stop if user hasn't been active in 12 hours
     const lastUsed = new Date(user.lastUsed).getTime();
     if (Date.now() - lastUsed > KEEP_ALIVE_MAX_IDLE_MS) {
       console.log(`[KEEPALIVE] Stopping for ${token.slice(0, 8)}... (idle >12h)`);
@@ -570,17 +592,15 @@ function startKeepAlive(token) {
       return;
     }
 
-    // Ping LS dashboard to keep PHP session alive
     const cookieHeader = user.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     try {
-      const res = await fetch(`https://learningsuite.byu.edu/.${user.sessionCode}/student/top`, {
+      const pingRes = await fetch(`https://learningsuite.byu.edu/.${user.sessionCode}/student/top`, {
         headers: { Cookie: cookieHeader, "User-Agent": "Mozilla/5.0" },
         redirect: "manual",
         signal: AbortSignal.timeout(15000),
       });
 
-      // Check if we got redirected to CAS (session dead)
-      const location = res.headers.get("location") || "";
+      const location = pingRes.headers.get("location") || "";
       if (location.includes("cas.byu.edu")) {
         const fails = (keepAliveFailures.get(token) || 0) + 1;
         keepAliveFailures.set(token, fails);
@@ -592,7 +612,6 @@ function startKeepAlive(token) {
         return;
       }
 
-      // Success — reset failure counter
       keepAliveFailures.set(token, 0);
     } catch (err) {
       const fails = (keepAliveFailures.get(token) || 0) + 1;
@@ -621,7 +640,7 @@ function stopKeepAlive(token) {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`[SERVER] BYU Learning Suite MCP running on port ${PORT}`);
-  console.log(`[SERVER] MCP endpoint: http://localhost:${PORT}/mcp/:token`);
-  console.log(`[SERVER] Auth endpoint: http://localhost:${PORT}/auth/register`);
+  console.log(`[SERVER] OAuth: ${serverUrl.href}`);
+  console.log(`[SERVER] MCP (OAuth): ${serverUrl.href}mcp`);
+  console.log(`[SERVER] MCP (legacy): ${serverUrl.href}mcp/:token`);
 });
-
