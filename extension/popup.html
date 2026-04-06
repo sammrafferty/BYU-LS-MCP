@@ -16,10 +16,26 @@
 
   /* States */
   .state { display: none; }
-  .state.active { display: block; }
 
-  /* Not logged in */
-  .login-msg { font-size: 13px; color: #c0c4d0; margin-bottom: 16px; line-height: 1.5; }
+  /* Status dot */
+  .status-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    font-size: 13px;
+  }
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot.green { background: #4ade80; }
+  .dot.yellow { background: #facc15; }
+  .dot.red { background: #f87171; }
+
+  /* Buttons */
   .btn {
     display: block;
     width: 100%;
@@ -37,31 +53,8 @@
     border: 1px solid #2a3e5c;
   }
   .btn-login:hover { background: #1e2850; }
-  .btn-connect {
-    background: #4a6cf7;
-    color: #fff;
-    font-size: 16px;
-    padding: 16px;
-  }
-  .btn-connect:hover { background: #3b5de7; }
-  .btn-connect:disabled { background: #2a2e3e; color: #555; cursor: wait; }
 
-  /* Status dot */
-  .status-row {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    margin-bottom: 20px;
-    font-size: 13px;
-  }
-  .dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .dot.green { background: #4ade80; }
-  .dot.red { background: #f87171; }
+  .login-msg { font-size: 13px; color: #c0c4d0; margin-bottom: 16px; line-height: 1.5; }
 
   /* Result */
   .url-box {
@@ -107,52 +100,60 @@
   }
   .steps b { color: #e0e4ef; }
 
+  .auto-note {
+    margin-top: 16px;
+    font-size: 11px;
+    color: #555;
+    line-height: 1.5;
+    padding-top: 12px;
+    border-top: 1px solid #1a1e2e;
+  }
+  .auto-note b { color: #8890a4; }
+
+  .meta {
+    margin-top: 12px;
+    font-size: 10px;
+    color: #444;
+  }
+
   .error { color: #f87171; font-size: 12px; margin-top: 12px; }
 </style>
 </head>
 <body>
   <h1>BYU Learning Suite</h1>
-  <div class="sub">Connect to Claude in one click</div>
+  <div class="sub">Auto-connected to Claude</div>
 
   <!-- State: Not logged in -->
   <div id="stateLogin" class="state">
     <div class="status-row"><div class="dot red"></div> Not logged in</div>
-    <p class="login-msg">Log in to Learning Suite first, then come back and click the extension again.</p>
+    <p class="login-msg">Log in to Learning Suite. The extension will auto-connect once you do.</p>
     <button class="btn btn-login" id="openLS">Open Learning Suite</button>
   </div>
 
-  <!-- State: Ready to connect -->
-  <div id="stateReady" class="state">
-    <div class="status-row"><div class="dot green"></div> Logged in to Learning Suite</div>
-    <button class="btn btn-connect" id="connectBtn">Connect to Claude</button>
-  </div>
-
-  <!-- State: Connecting -->
-  <div id="stateLoading" class="state">
-    <div class="status-row"><div class="dot green"></div> Connecting...</div>
-    <button class="btn btn-connect" disabled>Setting up...</button>
-  </div>
-
-  <!-- State: Done -->
-  <div id="stateDone" class="state">
-    <div class="status-row"><div class="dot green"></div> Connected!</div>
+  <!-- State: Connected -->
+  <div id="stateConnected" class="state">
+    <div class="status-row"><div class="dot green"></div> Connected &amp; auto-refreshing</div>
     <div class="url-box">
       <div class="url-label">Your connector URL</div>
       <div class="url-text" id="connectorUrl"></div>
       <button class="btn-copy" id="copyBtn">Copy URL</button>
     </div>
     <div class="steps">
-      <b>Paste it in Claude Desktop:</b><br>
-      Settings → Connectors → <b>+</b> → Add custom connector<br>
-      Name it anything → paste the URL → <b>Add</b>
+      <b>First time?</b> Paste this URL in Claude Desktop:<br>
+      Settings &rarr; Connectors &rarr; <b>+</b> &rarr; Paste &rarr; <b>Add</b>
     </div>
+    <div class="auto-note">
+      <b>Auto-refresh is ON.</b> Cookies are sent to the server every 10 minutes. You don't need to do anything — just stay logged into LS.
+    </div>
+    <div class="meta" id="lastHeartbeat"></div>
   </div>
 
   <!-- State: Error -->
   <div id="stateError" class="state">
-    <div class="status-row"><div class="dot red"></div> Something went wrong</div>
+    <div class="status-row"><div class="dot yellow"></div> Connecting...</div>
+    <p class="login-msg">The extension is trying to reach the server. This usually resolves on its own within a minute.</p>
     <p class="error" id="errorMsg"></p>
-    <button class="btn btn-login" id="retryBtn" style="margin-top: 12px;">Try Again</button>
+    <div class="meta" id="lastHeartbeatError"></div>
   </div>
 
   <script src="popup.js"></script>

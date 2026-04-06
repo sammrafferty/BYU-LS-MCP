@@ -61,7 +61,15 @@ Score-to-assignment mapping uses `assignment.gbAssignmentID` (NOT `assignment.id
 
 ### Remote Server Auth
 
-The bookmarklet (`src/bookmarklet.js`) runs on the LS page, reads `document.cookie` (PHPSESSID is not httpOnly), extracts sessionCode from the URL, and POSTs to `/auth/register`. The server generates a token and stores the user's cookies in `sessions.json`. Each `/mcp/:token` request creates a per-user scraper instance.
+Two methods send cookies to the server:
+
+1. **Chrome Extension (recommended)**: Background service worker (`extension/background.js`) reads LS cookies via `chrome.cookies` API every 10 minutes and POSTs to `/auth/register`. Also triggers immediately when a new PHPSESSID appears (user just logged in). Fully automatic — user never needs to click anything after initial setup.
+
+2. **Bookmarklet (fallback)**: `src/bookmarklet.js` runs on the LS page, reads `document.cookie`, and POSTs to `/auth/register`. Manual click required.
+
+Both methods: server generates a token, stores cookies in `sessions.json` (file-backed, survives process restarts). Token is stored in Chrome extension storage / LS localStorage for reuse. Each `/mcp/:token` request creates a per-user scraper instance.
+
+Sessions persist to disk (`sessions.json`) and reload on server startup. Keep-alive pings LS every 8 minutes with retry logic (3 failures before stopping).
 
 ### Error Pattern
 

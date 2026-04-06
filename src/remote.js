@@ -543,24 +543,29 @@ app.get("/", (req, res) => {
 });
 
 // --- Session keep-alive ---
-// Pings LS every 14 minutes to prevent PHP session timeout.
-// Stops after 2 hours of no MCP activity to avoid waste.
+// Pings LS every 8 minutes to prevent PHP session timeout.
+// Retries on failure (up to 3 consecutive failures before stopping).
+// Stops after 12 hours idle to avoid waste — the Chrome extension
+// will re-register on its next heartbeat anyway.
 
 const keepAliveIntervals = new Map();
-const KEEP_ALIVE_MS = 14 * 60 * 1000; // 14 minutes
-const KEEP_ALIVE_MAX_IDLE_MS = 2 * 60 * 60 * 1000; // 2 hours
+const keepAliveFailures = new Map();
+const KEEP_ALIVE_MS = 8 * 60 * 1000; // 8 minutes
+const KEEP_ALIVE_MAX_IDLE_MS = 12 * 60 * 60 * 1000; // 12 hours
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 function startKeepAlive(token) {
   stopKeepAlive(token);
+  keepAliveFailures.set(token, 0);
 
   const interval = setInterval(async () => {
     const user = getUser(token);
     if (!user) { stopKeepAlive(token); return; }
 
-    // Stop if user hasn't been active via MCP in 2 hours
+    // Stop if user hasn't been active in 12 hours
     const lastUsed = new Date(user.lastUsed).getTime();
     if (Date.now() - lastUsed > KEEP_ALIVE_MAX_IDLE_MS) {
-      console.log(`[KEEPALIVE] Stopping for ${token.slice(0, 8)}... (idle >2h)`);
+      console.log(`[KEEPALIVE] Stopping for ${token.slice(0, 8)}... (idle >12h)`);
       stopKeepAlive(token);
       return;
     }
@@ -568,15 +573,35 @@ function startKeepAlive(token) {
     // Ping LS dashboard to keep PHP session alive
     const cookieHeader = user.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     try {
-      await fetch(`https://learningsuite.byu.edu/.${user.sessionCode}/student/top`, {
+      const res = await fetch(`https://learningsuite.byu.edu/.${user.sessionCode}/student/top`, {
         headers: { Cookie: cookieHeader, "User-Agent": "Mozilla/5.0" },
         redirect: "manual",
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(15000),
       });
-    } catch {
-      // Ping failed — session may have expired, stop pinging
-      console.log(`[KEEPALIVE] Ping failed for ${token.slice(0, 8)}...`);
-      stopKeepAlive(token);
+
+      // Check if we got redirected to CAS (session dead)
+      const location = res.headers.get("location") || "";
+      if (location.includes("cas.byu.edu")) {
+        const fails = (keepAliveFailures.get(token) || 0) + 1;
+        keepAliveFailures.set(token, fails);
+        console.log(`[KEEPALIVE] Session expired for ${token.slice(0, 8)}... (attempt ${fails}/${MAX_CONSECUTIVE_FAILURES})`);
+        if (fails >= MAX_CONSECUTIVE_FAILURES) {
+          console.log(`[KEEPALIVE] Giving up for ${token.slice(0, 8)}... — waiting for extension refresh`);
+          stopKeepAlive(token);
+        }
+        return;
+      }
+
+      // Success — reset failure counter
+      keepAliveFailures.set(token, 0);
+    } catch (err) {
+      const fails = (keepAliveFailures.get(token) || 0) + 1;
+      keepAliveFailures.set(token, fails);
+      console.log(`[KEEPALIVE] Ping failed for ${token.slice(0, 8)}... (${err.message}) attempt ${fails}/${MAX_CONSECUTIVE_FAILURES}`);
+      if (fails >= MAX_CONSECUTIVE_FAILURES) {
+        console.log(`[KEEPALIVE] Giving up for ${token.slice(0, 8)}... — waiting for extension refresh`);
+        stopKeepAlive(token);
+      }
     }
   }, KEEP_ALIVE_MS);
 
@@ -589,6 +614,7 @@ function stopKeepAlive(token) {
     clearInterval(interval);
     keepAliveIntervals.delete(token);
   }
+  keepAliveFailures.delete(token);
 }
 
 // --- Start server ---

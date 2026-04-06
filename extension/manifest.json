@@ -1,18 +1,21 @@
 {
   "manifest_version": 3,
   "name": "BYU Learning Suite → Claude",
-  "version": "1.0.0",
-  "description": "Connect your BYU Learning Suite to Claude with one click.",
-  "permissions": ["cookies", "tabs", "storage"],
+  "version": "2.0.0",
+  "description": "Automatically keeps your BYU Learning Suite connected to Claude. Zero maintenance.",
+  "permissions": ["cookies", "tabs", "storage", "alarms"],
   "host_permissions": [
     "*://learningsuite.byu.edu/*",
     "http://localhost:3847/*",
     "https://*.up.railway.app/*",
     "https://*.railway.app/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Connect BYU LS to Claude"
+    "default_title": "BYU LS → Claude"
   },
   "icons": {
     "48": "icon.png",
