@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const OAUTH_STATE_FILE = resolve(__dirname, "../../oauth-state.json");
 
 const FLOW_TTL_MS = 10 * 60 * 1000;      // 10 minutes for pending flows + auth codes
-const ACCESS_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const ACCESS_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — BYU session kept alive by server pings
 
 // --- Persistence ---
 
@@ -190,7 +190,7 @@ export class BYUOAuthProvider {
     return {
       access_token: accessToken,
       token_type: "bearer",
-      expires_in: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
+      expires_in: Math.floor(ACCESS_TOKEN_TTL_MS / 1000), // 30 days
     };
   }
 

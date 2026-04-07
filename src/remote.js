@@ -21,7 +21,7 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import { randomUUID } from "crypto";
 import { createAdapter } from "./data/adapter.js";
 import { registerTools } from "./tools/index.js";
-import { generateToken, registerUser, updateUserCookies, getUser, listUsers, revokeUser } from "./sessions.js";
+import { generateToken, registerUser, updateUserCookies, getUser, listUsers, revokeUser, getAllTokens } from "./sessions.js";
 import { BYUOAuthProvider } from "./auth/oauth-provider.js";
 
 const PORT = process.env.PORT || 3847;
@@ -643,4 +643,13 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`[SERVER] OAuth: ${serverUrl.href}`);
   console.log(`[SERVER] MCP (OAuth): ${serverUrl.href}mcp`);
   console.log(`[SERVER] MCP (legacy): ${serverUrl.href}mcp/:token`);
+
+  // Restart keep-alive pings for all persisted sessions
+  const tokens = getAllTokens();
+  for (const token of tokens) {
+    startKeepAlive(token);
+  }
+  if (tokens.length > 0) {
+    console.log(`[SERVER] Restarted keep-alive for ${tokens.length} persisted session(s)`);
+  }
 });

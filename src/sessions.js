@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_FILE = resolve(__dirname, "../sessions.json");
-const SESSIONS_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (extension auto-refreshes)
+const SESSIONS_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — matches OAuth access token lifetime
 
 // Load sessions from disk on startup
 const sessions = new Map();
@@ -113,6 +113,14 @@ export function listUsers() {
     lastUsed: data.lastUsed,
     lastRefresh: data.lastRefresh,
   }));
+}
+
+/**
+ * Returns all active session tokens. Used on server startup
+ * to restart keep-alive pings for persisted sessions.
+ */
+export function getAllTokens() {
+  return [...sessions.keys()];
 }
 
 export { sessions as _sessions };
